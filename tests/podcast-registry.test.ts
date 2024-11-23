@@ -1,91 +1,108 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 // Simulated contract state
-let podcasts: Map<number, {
-  owner: string,
-  name: string,
-  description: string,
-  rssFeed: string
-}>;
-let nextPodcastId: number;
+let podcastRatings: Map<number, { totalRating: number, numRatings: number }>;
+let userRatings: Map<string, Map<number, number>>;
 
 // Simulated contract functions
-function registerPodcast(caller: string, name: string, description: string, rssFeed: string): number {
-  const podcastId = nextPodcastId;
-  podcasts.set(podcastId, { owner: caller, name, description, rssFeed });
-  nextPodcastId++;
-  return podcastId;
-}
-
-function getPodcast(podcastId: number) {
-  const podcast = podcasts.get(podcastId);
-  if (!podcast) {
-    throw new Error('ERR_NOT_FOUND');
+function ratePodcast(caller: string, podcastId: number, rating: number): boolean {
+  if (rating < 1 || rating > 5) {
+    throw new Error('ERR_INVALID_RATING');
   }
-  return podcast;
-}
-
-function updatePodcast(caller: string, podcastId: number, name: string, description: string, rssFeed: string): boolean {
-  const podcast = podcasts.get(podcastId);
-  if (!podcast) {
-    throw new Error('ERR_NOT_FOUND');
+  
+  const userPodcastKey = `${caller}-${podcastId}`;
+  if (userRatings.get(caller)?.has(podcastId)) {
+    throw new Error('ERR_ALREADY_VOTED');
   }
-  if (podcast.owner !== caller) {
-    throw new Error('ERR_OWNER_ONLY');
+  
+  // Update podcast ratings
+  const currentRatings = podcastRatings.get(podcastId) || { totalRating: 0, numRatings: 0 };
+  podcastRatings.set(podcastId, {
+    totalRating: currentRatings.totalRating + rating,
+    numRatings: currentRatings.numRatings + 1
+  });
+  
+  // Update user ratings
+  if (!userRatings.has(caller)) {
+    userRatings.set(caller, new Map());
   }
-  podcasts.set(podcastId, { ...podcast, name, description, rssFeed });
+  userRatings.get(caller)!.set(podcastId, rating);
+  
   return true;
 }
 
-describe('podcast-registry contract test suite', () => {
+function getPodcastRating(podcastId: number): { averageRating: number, numRatings: number } {
+  const ratings = podcastRatings.get(podcastId);
+  if (!ratings) {
+    throw new Error('ERR_NOT_FOUND');
+  }
+  return {
+    averageRating: Math.floor((ratings.totalRating * 100) / ratings.numRatings) / 100,
+    numRatings: ratings.numRatings
+  };
+}
+
+function getUserRating(user: string, podcastId: number): number {
+  const userRating = userRatings.get(user)?.get(podcastId);
+  if (userRating === undefined) {
+    throw new Error('ERR_NOT_FOUND');
+  }
+  return userRating;
+}
+
+describe('content-curation contract test suite', () => {
   beforeEach(() => {
-    podcasts = new Map();
-    nextPodcastId = 0;
+    podcastRatings = new Map();
+    userRatings = new Map();
   });
   
-  it('should register a new podcast', () => {
-    const podcastId = registerPodcast('user1', 'My Podcast', 'A great podcast', 'https://mypodcast.com/rss');
-    expect(podcastId).toBe(0);
-    expect(podcasts.size).toBe(1);
-  });
-  
-  it('should retrieve podcast details', () => {
-    registerPodcast('user1', 'My Podcast', 'A great podcast', 'https://mypodcast.com/rss');
-    const podcast = getPodcast(0);
-    expect(podcast).toEqual({
-      owner: 'user1',
-      name: 'My Podcast',
-      description: 'A great podcast',
-      rssFeed: 'https://mypodcast.com/rss'
-    });
-  });
-  
-  it('should update podcast details when called by owner', () => {
-    registerPodcast('user1', 'My Podcast', 'A great podcast', 'https://mypodcast.com/rss');
-    const result = updatePodcast('user1', 0, 'Updated Podcast', 'An updated great podcast', 'https://updatedpodcast.com/rss');
+  it('should rate a podcast successfully', () => {
+    const result = ratePodcast('user1', 1, 4);
     expect(result).toBe(true);
-    const updatedPodcast = getPodcast(0);
-    expect(updatedPodcast).toEqual({
-      owner: 'user1',
-      name: 'Updated Podcast',
-      description: 'An updated great podcast',
-      rssFeed: 'https://updatedpodcast.com/rss'
-    });
+    expect(podcastRatings.get(1)).toEqual({ totalRating: 4, numRatings: 1 });
+    expect(userRatings.get('user1')?.get(1)).toBe(4);
   });
   
-  it('should fail to update podcast details when called by non-owner', () => {
-    registerPodcast('user1', 'My Podcast', 'A great podcast', 'https://mypodcast.com/rss');
-    expect(() => updatePodcast('user2', 0, 'Hacked Podcast', 'A hacked podcast', 'https://hackedpodcast.com/rss'))
-        .toThrow('ERR_OWNER_ONLY');
+  it('should fail to rate a podcast with an invalid rating', () => {
+    expect(() => ratePodcast('user1', 1, 6)).toThrow('ERR_INVALID_RATING');
+    expect(() => ratePodcast('user1', 1, 0)).toThrow('ERR_INVALID_RATING');
   });
   
-  it('should fail to get non-existent podcast', () => {
-    expect(() => getPodcast(0)).toThrow('ERR_NOT_FOUND');
+  it('should fail to rate a podcast twice by the same user', () => {
+    ratePodcast('user1', 1, 4);
+    expect(() => ratePodcast('user1', 1, 5)).toThrow('ERR_ALREADY_VOTED');
   });
   
-  it('should fail to update non-existent podcast', () => {
-    expect(() => updatePodcast('user1', 0, 'Updated Podcast', 'An updated great podcast', 'https://updatedpodcast.com/rss'))
-        .toThrow('ERR_NOT_FOUND');
+  it('should get podcast rating correctly', () => {
+    ratePodcast('user1', 1, 4);
+    ratePodcast('user2', 1, 5);
+    const rating = getPodcastRating(1);
+    expect(rating).toEqual({ averageRating: 4.5, numRatings: 2 });
+  });
+  
+  it('should fail to get rating for non-existent podcast', () => {
+    expect(() => getPodcastRating(999)).toThrow('ERR_NOT_FOUND');
+  });
+  
+  it('should get user rating correctly', () => {
+    ratePodcast('user1', 1, 4);
+    const rating = getUserRating('user1', 1);
+    expect(rating).toBe(4);
+  });
+  
+  it('should fail to get rating for non-existent user-podcast combination', () => {
+    expect(() => getUserRating('user1', 999)).toThrow('ERR_NOT_FOUND');
+  });
+  
+  it('should handle multiple podcast ratings', () => {
+    ratePodcast('user1', 1, 4);
+    ratePodcast('user2', 1, 5);
+    ratePodcast('user1', 2, 3);
+    ratePodcast('user2', 2, 2);
+    
+    expect(getPodcastRating(1)).toEqual({ averageRating: 4.5, numRatings: 2 });
+    expect(getPodcastRating(2)).toEqual({ averageRating: 2.5, numRatings: 2 });
+    expect(getUserRating('user1', 1)).toBe(4);
+    expect(getUserRating('user2', 2)).toBe(2);
   });
 });
-
